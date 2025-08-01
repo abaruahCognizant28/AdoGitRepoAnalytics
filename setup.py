@@ -23,12 +23,12 @@ if requirements_file.exists():
 setup(
     name="ado-git-repo-analytics",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Arunabh Baruah",
+    author_email="arunabh.baruah@cognizant.com",
     description="Extract comprehensive analytics from Git repositories in Azure DevOps",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/ado-git-repo-analytics",
+    url="https://github.com/abaruahCognizant28/ado-git-repo-analytics",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
