@@ -89,6 +89,15 @@ class PrivacyConfig:
             ]
 
 
+@dataclass
+class DatabaseConfig:
+    """Database configuration"""
+    enabled: bool = True
+    url: Optional[str] = None
+    auto_store: bool = True
+    cleanup_days: int = 90
+
+
 class Config:
     """Main configuration class"""
     
@@ -168,6 +177,9 @@ class Config:
         
         privacy_config = advanced_config.get("privacy", {})
         self.privacy = PrivacyConfig(**privacy_config)
+        
+        database_config = advanced_config.get("database", {})
+        self.database = DatabaseConfig(**database_config)
     
     def _validate_config(self):
         """Validate configuration"""

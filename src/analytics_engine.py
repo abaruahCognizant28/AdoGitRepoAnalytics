@@ -12,6 +12,7 @@ from datetime import timezone
 
 from .azure_client import AzureDevOpsClient, Commit, Branch, PullRequest, Repository
 from .config import get_config
+from .database import DatabaseManager
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class AnalyticsEngine:
         """Initialize analytics engine"""
         self.config = get_config()
         self.client = AzureDevOpsClient()
+        self.db_manager = DatabaseManager() if self.config.database.enabled else None
         
     async def analyze_repository(self, project: str, repository: str) -> AnalyticsResult:
         """Analyze a single repository and return comprehensive analytics"""
@@ -57,6 +59,10 @@ class AnalyticsEngine:
             commits = await self._collect_commits(project, repository)
             branches = await self._collect_branches(project, repository)
             pull_requests = await self._collect_pull_requests(project, repository)
+            
+            # Store data in database if enabled
+            if self.db_manager and self.config.database.auto_store:
+                await self._store_repository_data(repo_info, commits, branches, pull_requests)
             
             # Run analytics
             result = AnalyticsResult(
@@ -74,6 +80,10 @@ class AnalyticsEngine:
                 performance_analytics=await self._analyze_performance_patterns(commits, pull_requests) if self.config.is_analytics_enabled('performance_analytics') else {},
                 technology_analytics=await self._analyze_technology_patterns(commits) if self.config.is_analytics_enabled('technology_analytics') else {}
             )
+            
+            # Store analytics result in database if enabled
+            if self.db_manager and self.config.database.auto_store:
+                await self._store_analytics_result(repo_info['id'], result)
             
             logger.info(f"Completed analysis for {project}/{repository}")
             return result
@@ -489,4 +499,88 @@ class AnalyticsEngine:
         return {
             "analysis_note": "Technology pattern analysis requires file change details",
             "implementation_status": "placeholder"
-        } 
+        }
+    
+    async def _store_repository_data(self, repo_info: Dict[str, Any], commits: List[Commit], 
+                                   branches: List[Branch], pull_requests: List[PullRequest]):
+        """Store repository data in database"""
+        if not self.db_manager:
+            return
+        
+        try:
+            async with self.db_manager:
+                # Create Repository object from repo_info
+                repository = Repository(
+                    id=repo_info['id'],
+                    name=repo_info['repository'],
+                    project=repo_info['project'],
+                    url=repo_info['url'],
+                    default_branch=repo_info['default_branch'],
+                    size=repo_info['size'],
+                    is_fork=repo_info['is_fork']
+                )
+                
+                # Store repository
+                await self.db_manager.store_repository(repository)
+                
+                # Store commits, branches, and pull requests
+                await self.db_manager.store_commits(commits, repository.id)
+                await self.db_manager.store_branches(branches, repository.id)
+                await self.db_manager.store_pull_requests(pull_requests, repository.id)
+                
+                logger.info(f"Stored repository data for {repo_info['project']}/{repo_info['repository']}")
+                
+        except Exception as e:
+            logger.error(f"Failed to store repository data: {e}")
+    
+    async def _store_analytics_result(self, repository_id: str, result: AnalyticsResult):
+        """Store analytics result in database"""
+        if not self.db_manager:
+            return
+        
+        try:
+            async with self.db_manager:
+                await self.db_manager.store_analytics_result(repository_id, result)
+                logger.info(f"Stored analytics result for repository {repository_id}")
+                
+        except Exception as e:
+            logger.error(f"Failed to store analytics result: {e}")
+    
+    async def get_repository_from_database(self, project: str, repository: str) -> Optional[Dict[str, Any]]:
+        """Get repository data from database if available"""
+        if not self.db_manager:
+            return None
+        
+        try:
+            async with self.db_manager:
+                repositories = await self.db_manager.get_repositories()
+                for repo in repositories:
+                    if repo.project == project and repo.name == repository:
+                        return {
+                            'id': repo.id,
+                            'name': repo.name,
+                            'project': repo.project,
+                            'url': repo.url,
+                            'default_branch': repo.default_branch,
+                            'size': repo.size,
+                            'is_fork': repo.is_fork,
+                            'stored_at': repo.created_at.isoformat()
+                        }
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to get repository from database: {e}")
+            return None
+    
+    async def get_stored_commits_count(self, repository_id: str) -> int:
+        """Get count of stored commits for a repository"""
+        if not self.db_manager:
+            return 0
+        
+        try:
+            async with self.db_manager:
+                return await self.db_manager.get_commit_count(repository_id)
+                
+        except Exception as e:
+            logger.error(f"Failed to get stored commits count: {e}")
+            return 0 

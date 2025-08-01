@@ -29,6 +29,7 @@ pytest-asyncio>=0.21.0
 black>=23.0.0
 flake8>=6.0.0
 
-# Optional: Database support
-# sqlalchemy>=2.0.0
-# aiosqlite>=0.19.0 
+# Database support
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+alembic>=1.13.0 

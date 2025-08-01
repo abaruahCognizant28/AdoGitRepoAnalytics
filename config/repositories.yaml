@@ -87,4 +87,15 @@ advanced:
       - "*.log"
       - "*.tmp"
       - "node_modules/*"
-      - ".git/*" 
+      - ".git/*"
+  
+  # Database settings
+  database:
+    enabled: true  # Enable database storage
+    url: ""  # Leave empty for default SQLite database in output directory
+             # Examples:
+             # "sqlite+aiosqlite:///path/to/database.db"
+             # "postgresql+asyncpg://user:password@localhost/database"
+             # "mysql+aiomysql://user:password@localhost/database"
+    auto_store: true  # Automatically store data during analysis
+    cleanup_days: 90  # Clean up analytics results older than this many days 

@@ -22,10 +22,12 @@ A comprehensive Python tool for extracting and analyzing Git repository data fro
 
 ### 🔧 Key Capabilities
 - **Async Processing**: High-performance data collection
+- **Database Storage**: Persistent storage with SQLite or other SQL databases
 - **Configurable Analytics**: Enable/disable specific analysis types
 - **Privacy Controls**: Author anonymization options
 - **Rate Limiting**: Respects Azure DevOps API limits
 - **Batch Processing**: Handle multiple repositories efficiently
+- **CLI Tools**: Command-line tools for database management
 
 ## Installation
 
@@ -248,6 +250,60 @@ advanced:
     retry_attempts: 3
     rate_limit_delay: 1  # seconds between requests
 ```
+
+### Database Storage
+
+The tool supports persistent storage of repository data and analytics results using SQLite (default) or other SQL databases.
+
+#### Database Configuration
+
+```yaml
+advanced:
+  database:
+    enabled: true  # Enable database storage
+    url: ""  # Leave empty for default SQLite database in output directory
+             # Examples:
+             # "sqlite+aiosqlite:///path/to/database.db"
+             # "postgresql+asyncpg://user:password@localhost/database"
+             # "mysql+aiomysql://user:password@localhost/database"
+    auto_store: true  # Automatically store data during analysis
+    cleanup_days: 90  # Clean up analytics results older than this many days
+```
+
+#### Database CLI Tools
+
+The tool includes a comprehensive CLI for managing stored data:
+
+```bash
+# Initialize database
+python db_cli.py init
+
+# Show database information
+python db_cli.py info
+
+# List all repositories
+python db_cli.py list
+
+# Show detailed repository information
+python db_cli.py show ProjectName RepositoryName
+
+# Export repository data to JSON
+python db_cli.py export ProjectName RepositoryName output.json
+
+# Clean up old analytics results (older than 30 days)
+python db_cli.py cleanup 30
+
+# Re-analyze repository from stored data
+python db_cli.py reanalyze ProjectName RepositoryName
+```
+
+#### Database Benefits
+
+- **Incremental Updates**: Only fetch new data on subsequent runs
+- **Historical Analysis**: Track analytics changes over time
+- **Offline Analysis**: Analyze stored data without API calls
+- **Data Export**: Export repository data for external tools
+- **Performance**: Faster analysis using cached data
 
 ### Processing Options
 
