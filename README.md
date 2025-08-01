@@ -21,13 +21,16 @@ A comprehensive Python tool for extracting and analyzing Git repository data fro
 - **Visualizations**: Charts and graphs (PNG, SVG, PDF)
 
 ### 🔧 Key Capabilities
-- **Async Processing**: High-performance data collection
+- **Dual Interface**: Web UI for ease of use, CLI for automation
+- **Interactive Configuration**: Visual setup of Azure DevOps connection and projects
+- **Real-time Progress**: Live updates during data collection and analysis
+- **Interactive Visualizations**: Tabbed charts with multiple themes and comparison views
 - **Database Storage**: Persistent storage with SQLite or other SQL databases
+- **Async Processing**: High-performance data collection
 - **Configurable Analytics**: Enable/disable specific analysis types
 - **Privacy Controls**: Author anonymization options
 - **Rate Limiting**: Respects Azure DevOps API limits
 - **Batch Processing**: Handle multiple repositories efficiently
-- **CLI Tools**: Command-line tools for database management
 
 ## Installation
 
@@ -139,10 +142,52 @@ output:
 
 ## Usage
 
-### Basic Usage
+The tool now provides both Command Line Interface (CLI) and Web User Interface (UI) options.
+
+### Quick Start
+
+**Option 1: Interactive Launcher (Recommended)**
+```bash
+python launcher.py
+```
+
+**Option 2: Direct Launch**
+```bash
+# Web UI (Recommended for beginners)
+python launcher.py --ui
+
+# Command Line Interface
+python launcher.py --cli
+
+# Database CLI
+python launcher.py --db
+```
+
+### Web User Interface
+
+The Web UI provides an intuitive interface for:
+- **Configuration Management**: Set up Azure DevOps connection, projects, and analytics options
+- **Data Collection**: Select repositories and run analysis tasks with progress tracking
+- **Analytics Visualization**: View interactive charts and insights across multiple tabs
+- **Database Management**: Explore stored data and manage database operations
+
+Launch the Web UI:
+```bash
+python launcher.py --ui
+# or
+streamlit run ui/app.py
+```
+
+### Command Line Interface
+
+For advanced users and automation:
 
 ```bash
+# Basic analysis
 python -m src.main
+
+# Or use the launcher
+python launcher.py --cli
 ```
 
 ### Programmatic Usage
