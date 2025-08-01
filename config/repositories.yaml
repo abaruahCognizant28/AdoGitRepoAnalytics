@@ -1,0 +1,90 @@
+# Repository Configuration
+# Configure the Azure DevOps repositories to analyze
+
+azure_devops:
+  organization: "your-organization-name"  # Replace with your Azure DevOps organization
+  
+  # List of projects and repositories to analyze
+  projects:
+    - name: "Project1"
+      repositories:
+        - "repo1"
+        - "repo2"
+        - "repo3"
+    
+    - name: "Project2" 
+      repositories:
+        - "repo4"
+        - "repo5"
+    
+    # Add more projects as needed
+    # - name: "ProjectN"
+    #   repositories:
+    #     - "repoN"
+
+# Analysis Configuration
+analysis:
+  # Date range for analysis (leave empty for all history)
+  date_range:
+    start_date: ""  # Format: YYYY-MM-DD (e.g., "2023-01-01")
+    end_date: ""    # Format: YYYY-MM-DD (e.g., "2024-01-01")
+  
+  # Analytics to include (set to false to disable)
+  include:
+    commit_analytics: true
+    author_analytics: true
+    branch_analytics: true
+    code_quality: true
+    file_analytics: true
+    time_analytics: true
+    pull_request_analytics: true
+    repository_health: true
+    team_analytics: true
+    security_analytics: true
+    performance_analytics: true
+    technology_analytics: true
+
+# Output Configuration
+output:
+  # Output directory for generated files
+  directory: "output"
+  
+  # File naming convention
+  filename_prefix: "git_analytics"
+  
+  # Include timestamp in filename
+  include_timestamp: true
+  
+  # Formats to generate
+  formats:
+    excel: true
+    csv: true
+    json: true
+  
+  # Visualization settings
+  charts:
+    generate_charts: true
+    chart_format: "png"  # png, jpg, svg
+    chart_dpi: 300
+    
+# Advanced Settings
+advanced:
+  # API request settings
+  api:
+    timeout: 30  # seconds
+    retry_attempts: 3
+    rate_limit_delay: 1  # seconds between requests
+  
+  # Data processing
+  processing:
+    batch_size: 100  # commits to process at once
+    max_file_size_mb: 10  # maximum file size to analyze in detail
+    
+  # Privacy settings
+  privacy:
+    anonymize_authors: false  # Set to true to anonymize author names
+    exclude_patterns:  # File patterns to exclude from analysis
+      - "*.log"
+      - "*.tmp"
+      - "node_modules/*"
+      - ".git/*" 
