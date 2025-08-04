@@ -7,11 +7,66 @@ import yaml
 import os
 from pathlib import Path
 import sys
+import asyncio
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from src.config import get_config, reload_config
+from src.azure_client import AzureDevOpsClient
+
+
+async def fetch_azure_projects(org_url: str, pat: str):
+    """Fetch projects from Azure DevOps"""
+    try:
+        # Temporarily set environment variables for the client
+        old_pat = os.environ.get('AZURE_DEVOPS_PAT')
+        old_org_url = os.environ.get('AZURE_DEVOPS_ORG_URL')
+        
+        os.environ['AZURE_DEVOPS_PAT'] = pat
+        os.environ['AZURE_DEVOPS_ORG_URL'] = org_url
+        
+        # Create a minimal config file temporarily if it doesn't exist
+        config_path = Path("config/repositories.yaml")
+        config_exists = config_path.exists()
+        
+        if not config_exists:
+            config_path.parent.mkdir(exist_ok=True)
+            minimal_config = {
+                'azure_devops': {
+                    'organization': org_url.split('/')[-1],
+                    'projects': []
+                }
+            }
+            with open(config_path, 'w') as f:
+                yaml.dump(minimal_config, f)
+        
+        try:
+            async with AzureDevOpsClient() as client:
+                projects = await client.get_projects()
+                return [{'id': p.id, 'name': p.name, 'description': p.description} for p in projects]
+        finally:
+            # Restore original environment variables
+            if old_pat is not None:
+                os.environ['AZURE_DEVOPS_PAT'] = old_pat
+            elif 'AZURE_DEVOPS_PAT' in os.environ:
+                del os.environ['AZURE_DEVOPS_PAT']
+                
+            if old_org_url is not None:
+                os.environ['AZURE_DEVOPS_ORG_URL'] = old_org_url
+            elif 'AZURE_DEVOPS_ORG_URL' in os.environ:
+                del os.environ['AZURE_DEVOPS_ORG_URL']
+            
+            # Clean up temporary config if we created it
+            if not config_exists and config_path.exists():
+                try:
+                    config_path.unlink()
+                except:
+                    pass
+                    
+    except Exception as e:
+        st.error(f"Failed to fetch projects from Azure DevOps: {str(e)}")
+        return []
 
 
 def show():
@@ -68,7 +123,9 @@ def show_environment_config():
         if save_env:
             if pat and org_url:
                 save_environment_config(pat, org_url)
-                st.success("✅ Environment configuration saved!")
+                # Reload configuration to reflect changes
+                reload_config()
+                st.success("✅ Environment configuration saved and applied!")
                 st.rerun()
             else:
                 st.error("❌ Please fill in all required fields")
@@ -102,23 +159,114 @@ def show_projects_config():
         organization = ''
         projects = []
     
+    # Convert ProjectConfig objects to dictionaries for easier handling
+    current_projects = []
+    if projects:
+        current_projects = [
+            {'name': p.name, 'repositories': p.repositories} 
+            for p in projects
+        ]
+    
+    # Check if we need to show Azure DevOps project discovery
+    show_azure_discovery = len(current_projects) == 0
+    
+    # Environment variables for Azure DevOps access
+    current_pat = os.getenv("AZURE_DEVOPS_PAT", "")
+    current_org_url = os.getenv("AZURE_DEVOPS_ORG_URL", "")
+    
+    # Azure DevOps Project Discovery Section
+    if show_azure_discovery and current_pat and current_org_url:
+        st.markdown("### 🔍 Discover Projects from Azure DevOps")
+        st.info("No projects are currently configured. You can discover projects from your Azure DevOps organization.")
+        
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button("🔍 Fetch Projects", type="primary"):
+                with st.spinner("Fetching projects from Azure DevOps..."):
+                    # Run async function
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        azure_projects = loop.run_until_complete(
+                            fetch_azure_projects(current_org_url, current_pat)
+                        )
+                        loop.close()
+                        
+                        if azure_projects:
+                            st.session_state['discovered_projects'] = azure_projects
+                            st.success(f"✅ Found {len(azure_projects)} projects!")
+                            st.rerun()
+                        else:
+                            st.warning("No projects found or unable to connect.")
+                    except Exception as e:
+                        st.error(f"Error fetching projects: {str(e)}")
+        
+        # Show discovered projects for selection
+        if 'discovered_projects' in st.session_state and st.session_state['discovered_projects']:
+            st.markdown("### 📋 Select Projects to Add")
+            discovered_projects = st.session_state['discovered_projects']
+            
+            with st.form("select_projects_form"):
+                selected_projects = []
+                
+                for project in discovered_projects:
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        selected = st.checkbox(
+                            f"Select", 
+                            key=f"select_{project['id']}"
+                        )
+                    with col2:
+                        st.markdown(f"**{project['name']}**")
+                        if project['description']:
+                            st.markdown(f"*{project['description']}*")
+                    
+                    if selected:
+                        selected_projects.append(project['name'])
+                
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    add_selected = st.form_submit_button("➕ Add Selected Projects", type="primary")
+                
+                if add_selected and selected_projects:
+                    # Add selected projects with empty repositories list
+                    new_projects = [{'name': name, 'repositories': ['']} for name in selected_projects]
+                    org_from_url = current_org_url.split('/')[-1] if current_org_url else organization
+                    save_projects_config(org_from_url, new_projects)
+                    reload_config()
+                    
+                    # Clear the discovered projects from session state
+                    if 'discovered_projects' in st.session_state:
+                        del st.session_state['discovered_projects']
+                    
+                    st.success(f"✅ Added {len(selected_projects)} projects!")
+                    st.rerun()
+        
+        st.markdown("---")
+    
+    # Manual Project Configuration Section
+    st.markdown("### ✏️ Manual Project Configuration")
+    
+    # Ensure we have at least one project template for manual entry
+    if not current_projects:
+        current_projects = [{'name': '', 'repositories': ['']}]
+    
     with st.form("projects_form"):
         # Organization name
         org_name = st.text_input(
             "Organization Name",
-            value=organization,
+            value=organization or (current_org_url.split('/')[-1] if current_org_url else ''),
             help="The name of your Azure DevOps organization (not the full URL)"
         )
         
-        st.markdown("### Projects and Repositories")
+        st.markdown("#### Projects and Repositories")
         
-        # Dynamic project/repository management
-        if 'project_configs' not in st.session_state:
-            st.session_state.project_configs = projects if projects else [{'name': '', 'repositories': ['']}]
+        # Use container to manage dynamic content
+        project_configs = []
         
         # Display existing projects
-        for i, project in enumerate(st.session_state.project_configs):
-            st.markdown(f"#### Project {i + 1}")
+        for i, project in enumerate(current_projects):
+            st.markdown(f"**Project {i + 1}**")
             
             col1, col2 = st.columns([3, 1])
             with col1:
@@ -128,62 +276,79 @@ def show_projects_config():
                     key=f"project_name_{i}",
                     placeholder="Enter project name"
                 )
-                st.session_state.project_configs[i]['name'] = project_name
-            
-            with col2:
-                if st.button("🗑️ Remove", key=f"remove_project_{i}"):
-                    if len(st.session_state.project_configs) > 1:
-                        st.session_state.project_configs.pop(i)
-                        st.rerun()
             
             # Repositories for this project
             repositories = project.get('repositories', [''])
+            repo_configs = []
             
             st.markdown("**Repositories:**")
             for j, repo in enumerate(repositories):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    repo_name = st.text_input(
-                        "Repository",
-                        value=repo,
-                        key=f"repo_{i}_{j}",
-                        placeholder="Enter repository name"
-                    )
-                    if len(repositories) > j:
-                        repositories[j] = repo_name
-                
-                with col2:
-                    if st.button("➖", key=f"remove_repo_{i}_{j}"):
-                        if len(repositories) > 1:
-                            repositories.pop(j)
-                            st.rerun()
+                repo_name = st.text_input(
+                    "Repository",
+                    value=repo,
+                    key=f"repo_{i}_{j}",
+                    placeholder="Enter repository name or leave empty to fetch all"
+                )
+                if repo_name.strip():  # Only add non-empty repos
+                    repo_configs.append(repo_name.strip())
             
-            st.session_state.project_configs[i]['repositories'] = repositories
-            
-            # Add repository button
-            if st.button(f"➕ Add Repository", key=f"add_repo_{i}"):
-                st.session_state.project_configs[i]['repositories'].append('')
-                st.rerun()
+            if project_name.strip():  # Only add non-empty projects
+                project_configs.append({
+                    'name': project_name.strip(),
+                    'repositories': repo_configs if repo_configs else ['']  # Ensure at least one repo slot
+                })
             
             st.markdown("---")
         
-        # Add project button
-        col1, col2, col3 = st.columns([1, 1, 2])
+        # Save button
+        col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("➕ Add Project"):
-                st.session_state.project_configs.append({'name': '', 'repositories': ['']})
-                st.rerun()
-        
-        with col2:
-            save_projects = st.form_submit_button("💾 Save Projects", type="primary")
+            save_projects = st.form_submit_button("💾 Save & Apply", type="primary")
         
         if save_projects:
-            if org_name and any(p['name'] for p in st.session_state.project_configs):
-                save_projects_config(org_name, st.session_state.project_configs)
-                st.success("✅ Projects configuration saved!")
+            if org_name and any(p['name'] for p in project_configs):
+                # Save directly to config file
+                save_projects_config(org_name, project_configs)
+                # Reload configuration to reflect changes
+                reload_config()
+                st.success("✅ Projects configuration saved and applied!")
                 st.rerun()
             else:
                 st.error("❌ Please provide organization name and at least one project")
+    
+    # Management buttons outside the form
+    st.markdown("### 🔧 Manage Projects")
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    
+    with col1:
+        if st.button("➕ Add Project"):
+            # Add a new project by modifying the config directly
+            current_projects.append({'name': '', 'repositories': ['']})
+            save_projects_config(organization, current_projects)
+            reload_config()
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Remove Last") and len(current_projects) > 1:
+            # Remove last project
+            current_projects.pop()
+            save_projects_config(organization, current_projects)
+            reload_config()
+            st.rerun()
+    
+    with col3:
+        if st.button("🔄 Refresh Discovery"):
+            # Clear discovered projects to allow re-fetching
+            if 'discovered_projects' in st.session_state:
+                del st.session_state['discovered_projects']
+            st.rerun()
+    
+    with col4:
+        if st.button("🧹 Clear All"):
+            # Clear all projects
+            save_projects_config(organization, [])
+            reload_config()
+            st.rerun()
 
 
 def show_analytics_config():
@@ -322,7 +487,9 @@ def show_analytics_config():
             }
             
             save_analytics_config(analytics_config, date_config)
-            st.success("✅ Analytics configuration saved!")
+            # Reload configuration to reflect changes
+            reload_config()
+            st.success("✅ Analytics configuration saved and applied!")
 
 
 def show_advanced_config():
@@ -360,7 +527,7 @@ def show_advanced_config():
                 "Rate Limit Delay (seconds)",
                 min_value=0.1,
                 max_value=10.0,
-                value=getattr(config.api, 'rate_limit_delay', 1.0) if config and hasattr(config, 'api') else 1.0,
+                value=float(getattr(config.api, 'rate_limit_delay', 1.0)) if config and hasattr(config, 'api') else 1.0,
                 step=0.1
             )
         
@@ -440,7 +607,9 @@ def show_advanced_config():
             }
             
             save_advanced_config(advanced_config)
-            st.success("✅ Advanced configuration saved!")
+            # Reload configuration to reflect changes
+            reload_config()
+            st.success("✅ Advanced configuration saved and applied!")
 
 
 def save_environment_config(pat: str, org_url: str):

@@ -75,6 +75,17 @@ class Repository:
     is_fork: bool = False
 
 
+@dataclass
+class Project:
+    """Project information"""
+    id: str
+    name: str
+    description: str
+    url: str
+    state: str
+    visibility: str
+
+
 class AzureDevOpsClient:
     """Azure DevOps REST API Client"""
     
@@ -116,6 +127,26 @@ class AzureDevOpsClient:
         """Async context manager exit"""
         if self._session:
             await self._session.close()
+    
+    async def get_projects(self) -> List[Project]:
+        """Get all projects in the organization"""
+        url = f"{self.base_url}/_apis/projects"
+        params = {"api-version": "6.0"}
+        
+        data = await self._make_request(url, params)
+        
+        projects = []
+        for project_data in data.get("value", []):
+            projects.append(Project(
+                id=project_data["id"],
+                name=project_data["name"],
+                description=project_data.get("description", ""),
+                url=project_data["url"],
+                state=project_data.get("state", "wellFormed"),
+                visibility=project_data.get("visibility", "private")
+            ))
+        
+        return projects
     
     async def _make_request(self, url: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Make authenticated request to Azure DevOps API"""
