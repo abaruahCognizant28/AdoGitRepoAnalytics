@@ -35,6 +35,34 @@ def setup_page_config():
     )
 
 
+@st.cache_resource
+def get_database_manager():
+    """Get cached database manager instance"""
+    return DatabaseManager()
+
+
+async def initialize_database():
+    """Initialize database if not already done"""
+    if not st.session_state.get('db_initialized', False):
+        try:
+            db_manager = get_database_manager()
+            await db_manager.initialize()
+            
+            # Check if database needs seeding from config
+            organizations = await db_manager.get_organizations()
+            if not organizations:
+                st.info("Initializing database from configuration...")
+                await db_manager.seed_from_config()
+                st.success("Database initialized successfully!")
+            
+            st.session_state.db_initialized = True
+            return True
+        except Exception as e:
+            st.error(f"Failed to initialize database: {e}")
+            return False
+    return True
+
+
 def setup_session_state():
     """Initialize session state variables"""
     if 'config_saved' not in st.session_state:
@@ -98,8 +126,39 @@ def show_connection_status():
         else:
             st.error("❌ Organization URL")
         
+        # Check database status
+        if st.session_state.get('db_initialized', False):
+            st.success("✅ Database Initialized")
+            
+            # Show database statistics
+            try:
+                db_manager = get_database_manager()
+                if asyncio.get_event_loop().is_running():
+                    # We're in an async context, handle carefully
+                    with st.spinner("Loading database stats..."):
+                        # Use st.cache or other method for async operations in Streamlit
+                        pass
+                else:
+                    # Synchronous context
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        orgs = loop.run_until_complete(db_manager.get_organizations())
+                        projects = loop.run_until_complete(db_manager.get_projects())
+                        repositories = loop.run_until_complete(db_manager.get_repositories())
+                        
+                        st.info(f"📊 {len(orgs)} Orgs, {len(projects)} Projects, {len(repositories)} Repos")
+                    finally:
+                        loop.close()
+                        
+            except Exception as e:
+                st.warning(f"⚠️ Database stats unavailable: {str(e)[:50]}...")
+        else:
+            st.error("❌ Database Not Initialized")
+            
+        # Check projects from config or database
         if hasattr(config, 'projects') and config.projects:
-            st.success(f"✅ {len(config.projects)} Projects")
+            st.success(f"✅ {len(config.projects)} Projects (Config)")
         else:
             st.error("❌ No Projects")
         
@@ -134,6 +193,28 @@ def main():
     """Main application entry point"""
     setup_page_config()
     setup_session_state()
+    
+    # Initialize database on startup
+    if not st.session_state.get('db_initialized', False):
+        with st.spinner("Initializing database..."):
+            try:
+                # Run database initialization
+                if asyncio.get_event_loop().is_running():
+                    # We're already in an async context
+                    success = asyncio.create_task(initialize_database())
+                else:
+                    # Create new event loop
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        success = loop.run_until_complete(initialize_database())
+                    finally:
+                        loop.close()
+                
+                if not success:
+                    st.error("Failed to initialize database. Some features may not work correctly.")
+            except Exception as e:
+                st.error(f"Database initialization error: {e}")
     
     # Navigation
     selected_page = main_navigation()

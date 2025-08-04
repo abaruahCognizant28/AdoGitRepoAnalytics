@@ -14,6 +14,7 @@ from .config import get_config, reload_config
 from .analytics_engine import AnalyticsEngine, AnalyticsResult
 from .excel_exporter import ExcelExporter
 from .visualizations import VisualizationGenerator
+from .database import DatabaseManager
 
 
 def setup_logging():
@@ -64,8 +65,44 @@ class GitAnalyticsTool:
         self.analytics_engine = AnalyticsEngine()
         self.excel_exporter = ExcelExporter()
         self.visualization_generator = VisualizationGenerator()
+        self.db_manager = DatabaseManager()
         
         self.logger = logging.getLogger(__name__)
+    
+    async def initialize(self):
+        """Initialize the application including database"""
+        self.logger.info("Initializing Git Analytics Tool...")
+        
+        # Initialize database
+        await self.db_manager.initialize()
+        
+        # Check if database needs seeding from config
+        organizations = await self.db_manager.get_organizations()
+        if not organizations:
+            self.logger.info("No organizations found in database, seeding from configuration...")
+            await self.db_manager.seed_from_config()
+        
+        self.logger.info("Git Analytics Tool initialization completed")
+    
+    async def close(self):
+        """Clean up resources"""
+        await self.db_manager.close()
+    
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self.initialize()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.close()
+    
+    async def get_repository_list_from_db(self, organization_name: str = None) -> list[tuple]:
+        """Get repository list from database instead of config"""
+        if organization_name is None:
+            organization_name = self.config.organization
+        
+        return await self.db_manager.get_repository_list(organization_name)
     
     async def run_analysis(self) -> Dict[str, AnalyticsResult]:
         """Run analytics on all configured repositories"""
@@ -73,7 +110,13 @@ class GitAnalyticsTool:
         self.logger.info(f"Configuration: {self.config}")
         
         results = {}
-        repository_list = self.config.get_repository_list()
+        
+        # Get repository list from database instead of config
+        try:
+            repository_list = await self.get_repository_list_from_db()
+        except Exception as e:
+            self.logger.warning(f"Failed to get repositories from database, falling back to config: {e}")
+            repository_list = self.config.get_repository_list()
         
         self.logger.info(f"Analyzing {len(repository_list)} repositories...")
         
@@ -235,77 +278,80 @@ class GitAnalyticsTool:
         return csv_files
     
     async def run(self) -> Dict[str, Any]:
-        """Main execution method"""
+        """Run the complete analytics pipeline"""
         try:
-            # Run analytics
+            # Ensure the tool is initialized
+            if not hasattr(self, '_initialized'):
+                await self.initialize()
+                self._initialized = True
+            
+            # Run analysis
             results = await self.run_analysis()
+            
+            if not results:
+                self.logger.warning("No analysis results to export")
+                return {
+                    "status": "completed_with_warnings",
+                    "message": "No repositories were successfully analyzed",
+                    "results_count": 0,
+                    "exports": {}
+                }
             
             # Export results
             export_info = await self.export_results(results)
             
-            # Generate summary
-            summary = {
+            # Final report
+            return {
                 "status": "success",
-                "analysis_completed_at": datetime.now().isoformat(),
-                "repositories_analyzed": len(results),
-                "exports": export_info
+                "message": f"Successfully analyzed {len(results)} repositories",
+                "results_count": len(results),
+                "timestamp": datetime.now().isoformat(),
+                "exports": export_info.get("exports", {}),
+                "repositories": list(results.keys())
             }
             
-            self.logger.info("Git Analytics completed successfully!")
-            self.logger.info(f"Results exported to: {self.config.output.directory}")
-            
-            return summary
-            
         except Exception as e:
-            self.logger.error(f"Analytics failed: {e}")
+            self.logger.error(f"Analytics pipeline failed: {e}")
             return {
-                "status": "failed",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
+                "status": "error",
+                "message": str(e),
+                "results_count": 0,
+                "exports": {}
             }
 
 
 async def main():
-    """Main entry point"""
+    """Main entry point for command line execution"""
+    setup_logging()
+    logger = logging.getLogger(__name__)
+    
     try:
-        # Setup logging
-        setup_logging()
+        logger.info("Starting Azure DevOps Git Repository Analytics Tool")
         
-        # Create and run analytics tool
-        tool = GitAnalyticsTool()
-        result = await tool.run()
-        
-        # Print summary
-        print("\n" + "="*50)
-        print("GIT ANALYTICS SUMMARY")
-        print("="*50)
-        print(f"Status: {result['status'].upper()}")
-        
-        if result['status'] == 'success':
-            print(f"Repositories Analyzed: {result['repositories_analyzed']}")
-            print(f"Analysis Completed: {result['analysis_completed_at']}")
+        # Create and run analytics tool using async context manager
+        async with GitAnalyticsTool() as tool:
+            result = await tool.run()
             
-            exports = result['exports']['exports']
-            if 'excel' in exports:
-                print(f"Excel Report: {exports['excel']}")
-            if 'json' in exports:
-                print(f"JSON Data: {exports['json']}")
-            if 'csv' in exports:
-                print(f"CSV Files: {len(exports['csv'])} files generated")
-            if 'charts' in exports:
-                print(f"Charts: {len(exports['charts'])} visualizations generated")
-        else:
-            print(f"Error: {result.get('error', 'Unknown error')}")
-        
-        print("="*50)
-        
-        return 0 if result['status'] == 'success' else 1
-        
-    except KeyboardInterrupt:
-        print("\nAnalysis interrupted by user")
-        return 1
+            # Print summary
+            if result["status"] == "success":
+                logger.info("=" * 60)
+                logger.info("ANALYTICS COMPLETED SUCCESSFULLY")
+                logger.info("=" * 60)
+                logger.info(f"Analyzed {result['results_count']} repositories")
+                logger.info(f"Exports: {', '.join(result['exports'].keys())}")
+                logger.info("=" * 60)
+                return 0
+            else:
+                logger.error("=" * 60)
+                logger.error("ANALYTICS COMPLETED WITH ERRORS")
+                logger.error("=" * 60)
+                logger.error(f"Status: {result['status']}")
+                logger.error(f"Message: {result['message']}")
+                logger.error("=" * 60)
+                return 1
+                
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error: {e}")
         return 1
 
 

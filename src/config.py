@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
+import asyncio
 
 
 @dataclass
@@ -101,9 +102,11 @@ class DatabaseConfig:
 class Config:
     """Main configuration class"""
     
-    def __init__(self, config_file: str = "config/repositories.yaml"):
+    def __init__(self, config_file: str = "config/repositories.yaml", use_database: bool = True):
         """Initialize configuration from file and environment"""
         self.config_file = config_file
+        self.use_database = use_database
+        self._db_manager = None
         self._load_environment()
         self._load_config_file()
         self._validate_config()
@@ -181,6 +184,66 @@ class Config:
         database_config = advanced_config.get("database", {})
         self.database = DatabaseConfig(**database_config)
     
+    def _get_database_manager(self):
+        """Get database manager instance"""
+        if self._db_manager is None:
+            # Import here to avoid circular imports
+            from .database import DatabaseManager
+            self._db_manager = DatabaseManager()
+        return self._db_manager
+    
+    async def get_repository_list_from_db(self, organization_name: Optional[str] = None) -> List[tuple]:
+        """Get repository list from database"""
+        if not self.use_database or not self.database.enabled:
+            return self.get_repository_list()
+        
+        try:
+            db_manager = self._get_database_manager()
+            if not hasattr(db_manager, 'async_session_maker') or db_manager.async_session_maker is None:
+                await db_manager.initialize()
+            
+            org_name = organization_name or self.organization
+            return await db_manager.get_repository_list(org_name)
+        except Exception:
+            # Fallback to config-based repository list
+            return self.get_repository_list()
+    
+    async def get_projects_from_db(self, organization_name: Optional[str] = None) -> List[ProjectConfig]:
+        """Get projects from database, falling back to config if needed"""
+        if not self.use_database or not self.database.enabled:
+            return self.projects
+        
+        try:
+            db_manager = self._get_database_manager()
+            if not hasattr(db_manager, 'async_session_maker') or db_manager.async_session_maker is None:
+                await db_manager.initialize()
+            
+            # Get organization
+            org_name = organization_name or self.organization
+            org = await db_manager.get_organization(org_name)
+            if not org:
+                return self.projects
+            
+            # Get projects from database
+            projects_db = await db_manager.get_projects(org.id)
+            
+            # Convert to ProjectConfig objects
+            db_projects = []
+            for project_db in projects_db:
+                repositories_db = await db_manager.get_repositories(project_db.id)
+                repo_names = [repo.name for repo in repositories_db]
+                
+                db_projects.append(ProjectConfig(
+                    name=project_db.name,
+                    repositories=repo_names
+                ))
+            
+            return db_projects if db_projects else self.projects
+            
+        except Exception:
+            # Fallback to config-based projects
+            return self.projects
+    
     def _validate_config(self):
         """Validate configuration"""
         errors = []
@@ -205,7 +268,7 @@ class Config:
             raise ValueError("Configuration validation failed:\n" + "\n".join(f"- {error}" for error in errors))
     
     def get_repository_list(self) -> List[tuple]:
-        """Get list of (project, repository) tuples"""
+        """Get list of (project, repository) tuples from config"""
         repos = []
         for project in self.projects:
             for repo in project.repositories:

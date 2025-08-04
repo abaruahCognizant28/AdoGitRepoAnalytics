@@ -12,7 +12,7 @@ import json
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, Float
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.orm import relationship, sessionmaker, selectinload
 from sqlalchemy.sql import select, delete, update, func
 from sqlalchemy import and_, or_, desc
 
@@ -24,13 +24,46 @@ logger = logging.getLogger(__name__)
 Base = declarative_base()
 
 
+class OrganizationModel(Base):
+    """Database model for Azure DevOps Organization"""
+    __tablename__ = "organizations"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, unique=True, nullable=False)
+    url = Column(String, nullable=False)
+    description = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    projects = relationship("ProjectModel", back_populates="organization", cascade="all, delete-orphan")
+
+
+class ProjectModel(Base):
+    """Database model for Azure DevOps Project"""
+    __tablename__ = "projects"
+    
+    id = Column(String, primary_key=True)  # Azure DevOps project ID
+    name = Column(String, nullable=False)
+    description = Column(Text)
+    state = Column(String, default="wellFormed")  # wellFormed, createPending, deleting, etc.
+    visibility = Column(String, default="private")  # private, public
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    organization = relationship("OrganizationModel", back_populates="projects")
+    repositories = relationship("RepositoryModel", back_populates="project", cascade="all, delete-orphan")
+
+
 class RepositoryModel(Base):
     """Database model for Repository"""
     __tablename__ = "repositories"
     
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
-    project = Column(String, nullable=False)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
     url = Column(String, nullable=False)
     default_branch = Column(String, nullable=False)
     size = Column(Integer, default=0)
@@ -39,17 +72,18 @@ class RepositoryModel(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
+    project = relationship("ProjectModel", back_populates="repositories")
     commits = relationship("CommitModel", back_populates="repository", cascade="all, delete-orphan")
     branches = relationship("BranchModel", back_populates="repository", cascade="all, delete-orphan")
     pull_requests = relationship("PullRequestModel", back_populates="repository", cascade="all, delete-orphan")
     
     @classmethod
-    def from_dataclass(cls, repo: Repository) -> "RepositoryModel":
+    def from_dataclass(cls, repo: Repository, project_id: str) -> "RepositoryModel":
         """Create model instance from dataclass"""
         return cls(
             id=repo.id,
             name=repo.name,
-            project=repo.project,
+            project_id=project_id,
             url=repo.url,
             default_branch=repo.default_branch,
             size=repo.size,
@@ -215,7 +249,7 @@ class DatabaseManager:
     def _get_database_url(self) -> str:
         """Get database URL from configuration"""
         db_config = getattr(self.config, 'database', None)
-        if db_config and hasattr(db_config, 'url'):
+        if db_config and hasattr(db_config, 'url') and db_config.url:
             return db_config.url
         
         # Default to SQLite in output directory
@@ -259,7 +293,115 @@ class DatabaseManager:
         """Async context manager exit"""
         await self.close()
     
-    async def store_repository(self, repository: Repository) -> RepositoryModel:
+    # Organization CRUD operations
+    async def store_organization(self, name: str, url: str, description: str = None) -> OrganizationModel:
+        """Store or update organization data"""
+        async with self.async_session_maker() as session:
+            # Check if organization already exists
+            result = await session.execute(
+                select(OrganizationModel).where(OrganizationModel.name == name)
+            )
+            existing_org = result.scalar_one_or_none()
+            
+            if existing_org:
+                # Update existing organization
+                existing_org.url = url
+                existing_org.description = description
+                existing_org.updated_at = datetime.utcnow()
+                org_model = existing_org
+            else:
+                # Create new organization
+                org_model = OrganizationModel(
+                    name=name,
+                    url=url,
+                    description=description
+                )
+                session.add(org_model)
+            
+            await session.commit()
+            await session.refresh(org_model)
+            return org_model
+    
+    async def get_organization(self, name: str) -> Optional[OrganizationModel]:
+        """Get organization by name"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(OrganizationModel).where(OrganizationModel.name == name)
+            )
+            return result.scalar_one_or_none()
+    
+    async def get_organizations(self) -> List[OrganizationModel]:
+        """Get all organizations"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(select(OrganizationModel))
+            return result.scalars().all()
+    
+    # Project CRUD operations
+    async def store_project(self, project_id: str, name: str, organization_id: int, 
+                           description: str = None, state: str = "wellFormed", 
+                           visibility: str = "private") -> ProjectModel:
+        """Store or update project data"""
+        async with self.async_session_maker() as session:
+            # Check if project already exists
+            result = await session.execute(
+                select(ProjectModel).where(ProjectModel.id == project_id)
+            )
+            existing_project = result.scalar_one_or_none()
+            
+            if existing_project:
+                # Update existing project
+                existing_project.name = name
+                existing_project.description = description
+                existing_project.state = state
+                existing_project.visibility = visibility
+                existing_project.organization_id = organization_id
+                existing_project.updated_at = datetime.utcnow()
+                project_model = existing_project
+            else:
+                # Create new project
+                project_model = ProjectModel(
+                    id=project_id,
+                    name=name,
+                    description=description,
+                    state=state,
+                    visibility=visibility,
+                    organization_id=organization_id
+                )
+                session.add(project_model)
+            
+            await session.commit()
+            await session.refresh(project_model)
+            return project_model
+    
+    async def get_project(self, project_id: str) -> Optional[ProjectModel]:
+        """Get project by ID"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(ProjectModel).where(ProjectModel.id == project_id)
+            )
+            return result.scalar_one_or_none()
+    
+    async def get_project_by_name(self, name: str, organization_id: int) -> Optional[ProjectModel]:
+        """Get project by name within an organization"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(ProjectModel).where(
+                    and_(ProjectModel.name == name, ProjectModel.organization_id == organization_id)
+                )
+            )
+            return result.scalar_one_or_none()
+    
+    async def get_projects(self, organization_id: Optional[int] = None) -> List[ProjectModel]:
+        """Get projects, optionally filtered by organization"""
+        async with self.async_session_maker() as session:
+            query = select(ProjectModel)
+            if organization_id:
+                query = query.where(ProjectModel.organization_id == organization_id)
+            
+            result = await session.execute(query)
+            return result.scalars().all()
+    
+    async def store_repository(self, repository: Repository, project_id: str) -> RepositoryModel:
         """Store or update repository data"""
         async with self.async_session_maker() as session:
             # Check if repository already exists
@@ -271,7 +413,7 @@ class DatabaseManager:
             if existing_repo:
                 # Update existing repository
                 existing_repo.name = repository.name
-                existing_repo.project = repository.project
+                existing_repo.project_id = project_id
                 existing_repo.url = repository.url
                 existing_repo.default_branch = repository.default_branch
                 existing_repo.size = repository.size
@@ -280,7 +422,7 @@ class DatabaseManager:
                 repo_model = existing_repo
             else:
                 # Create new repository
-                repo_model = RepositoryModel.from_dataclass(repository)
+                repo_model = RepositoryModel.from_dataclass(repository, project_id)
                 session.add(repo_model)
             
             await session.commit()
@@ -400,23 +542,73 @@ class DatabaseManager:
             )
             return result.scalar_one_or_none()
     
-    async def get_repositories(self) -> List[RepositoryModel]:
-        """Get all repositories"""
+    async def get_repositories(self, project_id: Optional[str] = None) -> List[RepositoryModel]:
+        """Get repositories, optionally filtered by project"""
         async with self.async_session_maker() as session:
-            result = await session.execute(select(RepositoryModel))
-            return result.scalars().all()
-    
-    async def get_commits(self, repository_id: str, limit: Optional[int] = None) -> List[CommitModel]:
-        """Get commits for a repository"""
-        async with self.async_session_maker() as session:
-            query = select(CommitModel).where(CommitModel.repository_id == repository_id).order_by(desc(CommitModel.author_date))
-            
-            if limit:
-                query = query.limit(limit)
+            query = select(RepositoryModel)
+            if project_id:
+                query = query.where(RepositoryModel.project_id == project_id)
             
             result = await session.execute(query)
             return result.scalars().all()
     
+    async def get_repository_with_project(self, repository_id: str) -> Optional[RepositoryModel]:
+        """Get repository by ID with project information loaded"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(RepositoryModel)
+                .options(selectinload(RepositoryModel.project))
+                .where(RepositoryModel.id == repository_id)
+            )
+            return result.scalar_one_or_none()
+    
+    async def get_repository_list(self, organization_name: Optional[str] = None) -> List[tuple]:
+        """Get list of (project_name, repository_name) tuples"""
+        async with self.async_session_maker() as session:
+            query = select(ProjectModel.name, RepositoryModel.name).join(
+                RepositoryModel, ProjectModel.id == RepositoryModel.project_id
+            )
+            
+            if organization_name:
+                query = query.join(
+                    OrganizationModel, ProjectModel.organization_id == OrganizationModel.id
+                ).where(OrganizationModel.name == organization_name)
+            
+            result = await session.execute(query)
+            return [(row[0], row[1]) for row in result.fetchall()]
+    
+    async def seed_from_config(self):
+        """Seed database with data from configuration file"""
+        self.logger.info("Seeding database from configuration...")
+        
+        try:
+            config = get_config()
+            
+            # Create organization
+            org_model = await self.store_organization(
+                name=config.organization,
+                url=config.get_azure_devops_url(),
+                description=f"Organization {config.organization}"
+            )
+            
+            # Create projects and their repositories
+            for project_config in config.projects:
+                # Use project name as ID for now (could be enhanced to use actual Azure DevOps project ID)
+                project_model = await self.store_project(
+                    project_id=project_config.name,
+                    name=project_config.name,
+                    organization_id=org_model.id,
+                    description=f"Project {project_config.name}"
+                )
+                
+                self.logger.info(f"Seeded project: {project_config.name}")
+            
+            self.logger.info("Database seeding completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to seed database from config: {e}")
+            raise
+
     async def get_latest_analytics_result(self, repository_id: str) -> Optional[AnalyticsResultModel]:
         """Get latest analytics result for a repository"""
         async with self.async_session_maker() as session:
@@ -460,6 +652,17 @@ class DatabaseManager:
                 }
             
             return authors
+    
+    async def get_commits(self, repository_id: str, limit: Optional[int] = None) -> List[CommitModel]:
+        """Get commits for a repository"""
+        async with self.async_session_maker() as session:
+            query = select(CommitModel).where(CommitModel.repository_id == repository_id).order_by(desc(CommitModel.author_date))
+            
+            if limit:
+                query = query.limit(limit)
+            
+            result = await session.execute(query)
+            return result.scalars().all()
     
     async def cleanup_old_data(self, days_to_keep: int = 90):
         """Clean up old analytics results"""

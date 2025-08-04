@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Database CLI tool for Azure DevOps Git Repository Analytics
+Database CLI for Azure DevOps Git Repository Analytics Tool
 """
 
-import sys
 import asyncio
 import argparse
-import logging
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
+import sys
 import json
+from pathlib import Path
+from typing import Optional
+import logging
+from datetime import datetime
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from src.database import DatabaseManager
+from src.database import DatabaseManager, OrganizationModel, ProjectModel, RepositoryModel
 from src.config import get_config
 from src.analytics_engine import AnalyticsEngine
 
@@ -30,83 +30,202 @@ def setup_logging(level: str = "INFO"):
 
 async def init_database():
     """Initialize database and create tables"""
-    print("Initializing database...")
+    print("🔧 Initializing database...")
     
-    db_manager = DatabaseManager()
-    async with db_manager:
-        print("✓ Database initialized successfully")
-        print(f"Database location: {db_manager.database_url}")
+    async with DatabaseManager() as db:
+        print("✅ Database initialized successfully")
+        print(f"📍 Database location: {db.database_url}")
+
+
+async def seed_database():
+    """Seed database from configuration file"""
+    print("🌱 Seeding database from configuration...")
+    
+    try:
+        async with DatabaseManager() as db:
+            await db.seed_from_config()
+            print("✅ Database seeded successfully")
+    except Exception as e:
+        print(f"❌ Failed to seed database: {e}")
+        return False
+    return True
+
+
+async def list_organizations():
+    """List all organizations"""
+    print("🏢 Organizations:")
+    print("-" * 50)
+    
+    async with DatabaseManager() as db:
+        organizations = await db.get_organizations()
+        
+        if not organizations:
+            print("No organizations found")
+            return
+        
+        for org in organizations:
+            print(f"ID: {org.id}")
+            print(f"Name: {org.name}")
+            print(f"URL: {org.url}")
+            print(f"Description: {org.description or 'N/A'}")
+            print(f"Created: {org.created_at}")
+            print("-" * 30)
+
+
+async def list_projects(organization_name: Optional[str] = None):
+    """List projects, optionally filtered by organization"""
+    print("📁 Projects:")
+    print("-" * 50)
+    
+    async with DatabaseManager() as db:
+        if organization_name:
+            org = await db.get_organization(organization_name)
+            if not org:
+                print(f"Organization '{organization_name}' not found")
+                return
+            projects = await db.get_projects(org.id)
+        else:
+            projects = await db.get_projects()
+        
+        if not projects:
+            print("No projects found")
+            return
+        
+        for project in projects:
+            print(f"ID: {project.id}")
+            print(f"Name: {project.name}")
+            print(f"State: {project.state}")
+            print(f"Visibility: {project.visibility}")
+            print(f"Description: {project.description or 'N/A'}")
+            print(f"Created: {project.created_at}")
+            
+            # Get repositories count
+            repositories = await db.get_repositories(project.id)
+            print(f"Repositories: {len(repositories)}")
+            print("-" * 30)
+
+
+async def list_repositories(project_name: Optional[str] = None, organization_name: Optional[str] = None):
+    """List repositories, optionally filtered by project"""
+    print("📂 Repositories:")
+    print("-" * 50)
+    
+    async with DatabaseManager() as db:
+        if project_name and organization_name:
+            org = await db.get_organization(organization_name)
+            if not org:
+                print(f"Organization '{organization_name}' not found")
+                return
+            
+            project = await db.get_project_by_name(project_name, org.id)
+            if not project:
+                print(f"Project '{project_name}' not found")
+                return
+            
+            repositories = await db.get_repositories(project.id)
+        else:
+            repositories = await db.get_repositories()
+        
+        if not repositories:
+            print("No repositories found")
+            return
+        
+        for repo in repositories:
+            print(f"ID: {repo.id}")
+            print(f"Name: {repo.name}")
+            print(f"Project ID: {repo.project_id}")
+            print(f"Default Branch: {repo.default_branch}")
+            print(f"Size: {repo.size} bytes")
+            print(f"Is Fork: {repo.is_fork}")
+            print(f"URL: {repo.url}")
+            print(f"Created: {repo.created_at}")
+            print("-" * 30)
+
+
+async def add_organization(name: str, url: str, description: str = None):
+    """Add a new organization"""
+    print(f"➕ Adding organization: {name}")
+    
+    async with DatabaseManager() as db:
+        try:
+            org = await db.store_organization(name, url, description)
+            print(f"✅ Organization added with ID: {org.id}")
+        except Exception as e:
+            print(f"❌ Failed to add organization: {e}")
+
+
+async def add_project(project_id: str, name: str, organization_name: str, description: str = None):
+    """Add a new project"""
+    print(f"➕ Adding project: {name}")
+    
+    async with DatabaseManager() as db:
+        try:
+            # Get organization
+            org = await db.get_organization(organization_name)
+            if not org:
+                print(f"❌ Organization '{organization_name}' not found")
+                return
+            
+            project = await db.store_project(project_id, name, org.id, description)
+            print(f"✅ Project added with ID: {project.id}")
+        except Exception as e:
+            print(f"❌ Failed to add project: {e}")
 
 
 async def show_database_info():
     """Show database information and statistics"""
-    db_manager = DatabaseManager()
-    async with db_manager:
-        repositories = await db_manager.get_repositories()
+    print("="*50)
+    print("📊 DATABASE INFORMATION")
+    print("="*50)
+    
+    async with DatabaseManager() as db:
+        print(f"📍 Database URL: {db.database_url}")
         
-        print("="*50)
-        print("DATABASE INFORMATION")
-        print("="*50)
-        print(f"Database URL: {db_manager.database_url}")
-        print(f"Total Repositories: {len(repositories)}")
+        # Get statistics
+        organizations = await db.get_organizations()
+        projects = await db.get_projects()
+        repositories = await db.get_repositories()
+        
+        print(f"🏢 Organizations: {len(organizations)}")
+        print(f"📁 Projects: {len(projects)}")
+        print(f"📂 Repositories: {len(repositories)}")
         
         if repositories:
-            print("\nRepositories:")
+            total_commits = 0
             for repo in repositories:
-                commit_count = await db_manager.get_commit_count(repo.id)
-                print(f"  • {repo.project}/{repo.name}")
-                print(f"    ID: {repo.id}")
-                print(f"    Commits: {commit_count}")
-                print(f"    Created: {repo.created_at}")
-                print(f"    Updated: {repo.updated_at}")
-                print()
-
-
-async def list_repositories():
-    """List all repositories in database"""
-    db_manager = DatabaseManager()
-    async with db_manager:
-        repositories = await db_manager.get_repositories()
+                commit_count = await db.get_commit_count(repo.id)
+                total_commits += commit_count
+            print(f"📝 Total Commits: {total_commits}")
         
-        if not repositories:
-            print("No repositories found in database")
-            return
-        
-        print(f"Found {len(repositories)} repositories:")
-        print()
-        
-        for repo in repositories:
-            commit_count = await db_manager.get_commit_count(repo.id)
-            print(f"Repository: {repo.project}/{repo.name}")
-            print(f"  ID: {repo.id}")
-            print(f"  URL: {repo.url}")
-            print(f"  Default Branch: {repo.default_branch}")
-            print(f"  Size: {repo.size} bytes")
-            print(f"  Is Fork: {repo.is_fork}")
-            print(f"  Commits Stored: {commit_count}")
-            print(f"  Last Updated: {repo.updated_at}")
-            print()
+        print("\n📈 Recent Activity:")
+        if repositories:
+            # Show most recently updated repositories
+            recent_repos = sorted(repositories, key=lambda r: r.updated_at, reverse=True)[:5]
+            for repo in recent_repos:
+                print(f"  • {repo.project_id}/{repo.name} - {repo.updated_at.strftime('%Y-%m-%d %H:%M')}")
 
 
-async def show_repository_details(project: str, repository: str):
+async def show_repository_details(project_id: str, repository: str):
     """Show detailed information about a specific repository"""
-    db_manager = DatabaseManager()
-    async with db_manager:
-        repositories = await db_manager.get_repositories()
+    async with DatabaseManager() as db:
+        repositories = await db.get_repositories()
         repo = None
         
         for r in repositories:
-            if r.project == project and r.name == repository:
+            if r.project_id == project_id and r.name == repository:
                 repo = r
                 break
         
         if not repo:
-            print(f"Repository {project}/{repository} not found in database")
+            print(f"❌ Repository '{project_id}/{repository}' not found")
             return
         
-        print(f"Repository Details: {project}/{repository}")
+        print("="*50)
+        print(f"📂 REPOSITORY DETAILS: {repo.name}")
         print("="*50)
         print(f"ID: {repo.id}")
+        print(f"Name: {repo.name}")
+        print(f"Project ID: {repo.project_id}")
         print(f"URL: {repo.url}")
         print(f"Default Branch: {repo.default_branch}")
         print(f"Size: {repo.size} bytes")
@@ -115,34 +234,23 @@ async def show_repository_details(project: str, repository: str):
         print(f"Updated: {repo.updated_at}")
         
         # Get commit statistics
-        commit_count = await db_manager.get_commit_count(repo.id)
-        print(f"\nCommits: {commit_count}")
+        commit_count = await db.get_commit_count(repo.id)
+        print(f"\n📝 Commits: {commit_count}")
         
         if commit_count > 0:
-            commits = await db_manager.get_commits(repo.id, limit=10)
-            print("\nRecent Commits (last 10):")
+            commits = await db.get_commits(repo.id, limit=5)
+            print(f"\n📅 Recent Commits:")
             for commit in commits:
-                print(f"  • {commit.commit_id[:8]} - {commit.author_name}")
+                print(f"  • {commit.commit_id[:8]} - {commit.author_name} - {commit.author_date.strftime('%Y-%m-%d')}")
                 print(f"    {commit.message[:80]}...")
-                print(f"    Date: {commit.author_date}")
-                print()
         
         # Get author statistics
-        author_stats = await db_manager.get_author_statistics(repo.id)
-        if author_stats:
-            print(f"\nAuthors ({len(author_stats)}):")
-            for author, stats in list(author_stats.items())[:10]:
+        authors = await db.get_author_statistics(repo.id)
+        if authors:
+            print(f"\n👥 Top Authors:")
+            sorted_authors = sorted(authors.items(), key=lambda x: x[1]['commit_count'], reverse=True)[:5]
+            for author, stats in sorted_authors:
                 print(f"  • {author}: {stats['commit_count']} commits")
-        
-        # Get latest analytics result
-        analytics_result = await db_manager.get_latest_analytics_result(repo.id)
-        if analytics_result:
-            print(f"\nLatest Analytics: {analytics_result.analysis_date}")
-            if analytics_result.commit_analytics:
-                total_commits = analytics_result.commit_analytics.get('total_commits', 0)
-                total_authors = analytics_result.author_analytics.get('total_authors', 0)
-                print(f"  Total Commits Analyzed: {total_commits}")
-                print(f"  Total Authors: {total_authors}")
 
 
 async def export_repository_data(project: str, repository: str, output_file: str):
@@ -210,12 +318,17 @@ async def export_repository_data(project: str, repository: str, output_file: str
 
 async def cleanup_old_data(days: int):
     """Clean up old analytics results"""
-    print(f"Cleaning up analytics results older than {days} days...")
+    print(f"🧹 Cleaning up data older than {days} days...")
     
-    db_manager = DatabaseManager()
-    async with db_manager:
-        deleted_count = await db_manager.cleanup_old_data(days)
-        print(f"✓ Cleaned up {deleted_count} old analytics results")
+    async with DatabaseManager() as db:
+        try:
+            deleted_count = await db.cleanup_old_data(days)
+            if deleted_count > 0:
+                print(f"✅ Cleaned up {deleted_count} old analytics results")
+            else:
+                print("ℹ️ No old data found to clean up")
+        except Exception as e:
+            print(f"❌ Failed to clean up data: {e}")
 
 
 async def reanalyze_repository(project: str, repository: str):
@@ -250,57 +363,77 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s init                                    # Initialize database
-  %(prog)s info                                    # Show database info
-  %(prog)s list                                    # List all repositories
-  %(prog)s show MyProject MyRepo                   # Show repository details
-  %(prog)s export MyProject MyRepo data.json      # Export repository data
-  %(prog)s cleanup 30                              # Clean up data older than 30 days
-  %(prog)s reanalyze MyProject MyRepo              # Re-analyze from stored data
+  %(prog)s init                           # Initialize database
+  %(prog)s seed                           # Seed database from config
+  %(prog)s info                           # Show database information
+  %(prog)s list orgs                      # List organizations
+  %(prog)s list projects                  # List projects
+  %(prog)s list repos                     # List repositories
+  %(prog)s add org "MyOrg" "https://dev.azure.com/myorg"
+  %(prog)s add project "MyProject" "MyProjectID" "MyOrg"
+  %(prog)s show repo "MyProject" "MyRepo" # Show repository details
+  %(prog)s cleanup                        # Clean up old data
         """
     )
     
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Set logging level"
-    )
+    parser.add_argument("--log-level", default="INFO", 
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                       help="Set logging level")
     
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
     # Init command
-    subparsers.add_parser("init", help="Initialize database and create tables")
+    subparsers.add_parser("init", help="Initialize database")
+    
+    # Seed command
+    subparsers.add_parser("seed", help="Seed database from configuration")
     
     # Info command
-    subparsers.add_parser("info", help="Show database information and statistics")
+    subparsers.add_parser("info", help="Show database information")
     
-    # List command
-    subparsers.add_parser("list", help="List all repositories in database")
+    # List commands
+    list_parser = subparsers.add_parser("list", help="List database entities")
+    list_subparsers = list_parser.add_subparsers(dest="list_type", help="What to list")
+    
+    list_subparsers.add_parser("orgs", help="List organizations")
+    
+    projects_parser = list_subparsers.add_parser("projects", help="List projects")
+    projects_parser.add_argument("--org", help="Filter by organization name")
+    
+    repos_parser = list_subparsers.add_parser("repos", help="List repositories")
+    repos_parser.add_argument("--project", help="Filter by project name")
+    repos_parser.add_argument("--org", help="Organization name (required with --project)")
+    
+    # Add commands
+    add_parser = subparsers.add_parser("add", help="Add database entities")
+    add_subparsers = add_parser.add_subparsers(dest="add_type", help="What to add")
+    
+    org_parser = add_subparsers.add_parser("org", help="Add organization")
+    org_parser.add_argument("name", help="Organization name")
+    org_parser.add_argument("url", help="Organization URL")
+    org_parser.add_argument("--description", help="Organization description")
+    
+    project_parser = add_subparsers.add_parser("project", help="Add project")
+    project_parser.add_argument("name", help="Project name")
+    project_parser.add_argument("project_id", help="Project ID")
+    project_parser.add_argument("organization", help="Organization name")
+    project_parser.add_argument("--description", help="Project description")
     
     # Show command
-    show_parser = subparsers.add_parser("show", help="Show detailed repository information")
-    show_parser.add_argument("project", help="Project name")
-    show_parser.add_argument("repository", help="Repository name")
+    show_parser = subparsers.add_parser("show", help="Show detailed information")
+    show_subparsers = show_parser.add_subparsers(dest="show_type", help="What to show")
     
-    # Export command
-    export_parser = subparsers.add_parser("export", help="Export repository data to JSON")
-    export_parser.add_argument("project", help="Project name")
-    export_parser.add_argument("repository", help="Repository name")
-    export_parser.add_argument("output", help="Output JSON file path")
+    repo_parser = show_subparsers.add_parser("repo", help="Show repository details")
+    repo_parser.add_argument("project", help="Project name or ID")
+    repo_parser.add_argument("repository", help="Repository name")
     
     # Cleanup command
-    cleanup_parser = subparsers.add_parser("cleanup", help="Clean up old analytics results")
-    cleanup_parser.add_argument("days", type=int, help="Number of days to keep (default: 90)")
-    
-    # Reanalyze command
-    reanalyze_parser = subparsers.add_parser("reanalyze", help="Re-analyze repository from stored data")
-    reanalyze_parser.add_argument("project", help="Project name")
-    reanalyze_parser.add_argument("repository", help="Repository name")
+    cleanup_parser = subparsers.add_parser("cleanup", help="Clean up old data")
+    cleanup_parser.add_argument("--days", type=int, default=90,
+                               help="Keep data newer than this many days")
     
     args = parser.parse_args()
     
-    # Setup logging
     setup_logging(args.log_level)
     
     if not args.command:
@@ -309,28 +442,47 @@ Examples:
     
     try:
         if args.command == "init":
-            asyncio.run(init_database())
+            return asyncio.run(init_database()) or 0
+        elif args.command == "seed":
+            success = asyncio.run(seed_database())
+            return 0 if success else 1
         elif args.command == "info":
-            asyncio.run(show_database_info())
+            return asyncio.run(show_database_info()) or 0
         elif args.command == "list":
-            asyncio.run(list_repositories())
+            if args.list_type == "orgs":
+                return asyncio.run(list_organizations()) or 0
+            elif args.list_type == "projects":
+                return asyncio.run(list_projects(args.org)) or 0
+            elif args.list_type == "repos":
+                return asyncio.run(list_repositories(args.project, args.org)) or 0
+            else:
+                print("❌ Please specify what to list: orgs, projects, or repos")
+                return 1
+        elif args.command == "add":
+            if args.add_type == "org":
+                return asyncio.run(add_organization(args.name, args.url, args.description)) or 0
+            elif args.add_type == "project":
+                return asyncio.run(add_project(args.project_id, args.name, args.organization, args.description)) or 0
+            else:
+                print("❌ Please specify what to add: org or project")
+                return 1
         elif args.command == "show":
-            asyncio.run(show_repository_details(args.project, args.repository))
-        elif args.command == "export":
-            asyncio.run(export_repository_data(args.project, args.repository, args.output))
+            if args.show_type == "repo":
+                return asyncio.run(show_repository_details(args.project, args.repository)) or 0
+            else:
+                print("❌ Please specify what to show: repo")
+                return 1
         elif args.command == "cleanup":
-            asyncio.run(cleanup_old_data(args.days))
-        elif args.command == "reanalyze":
-            asyncio.run(reanalyze_repository(args.project, args.repository))
-        
-        return 0
-        
+            return asyncio.run(cleanup_old_data(args.days)) or 0
+        else:
+            print(f"❌ Unknown command: {args.command}")
+            return 1
+            
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
-        return 1
+        print("\n👋 Operation cancelled")
+        return 0
     except Exception as e:
-        print(f"Error: {e}")
-        logging.exception("Unexpected error occurred")
+        print(f"❌ Error: {e}")
         return 1
 
 
