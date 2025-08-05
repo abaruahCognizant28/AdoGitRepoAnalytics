@@ -1,5 +1,5 @@
 """
-Data collection page for running analytics tasks
+Data collection page for running analytics tasks with request tracking
 """
 
 import streamlit as st
@@ -13,8 +13,8 @@ import json
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from src.config import get_config
-from src.analytics_engine import AnalyticsEngine
-from src.main import GitAnalyticsTool
+from src.database import DatabaseManager
+from src.polling_service import is_polling_service_running
 
 
 def show():
@@ -31,15 +31,14 @@ def show():
         st.info("Please configure the tool in the Configuration page first.")
         return
     
-    # Show repository selection
-    repositories = get_repository_list(config)
-    if not repositories:
-        st.error("❌ No repositories found in configuration")
-        st.info("Please add projects and repositories in the Configuration page.")
-        return
+    # Main interface - toggle between new request and existing requests
+    tab1, tab2 = st.tabs(["🆕 New Request", "📋 Existing Requests"])
     
-    # Task selection interface
-    show_task_selection(repositories)
+    with tab1:
+        show_new_request_interface()
+    
+    with tab2:
+        show_existing_requests_interface()
 
 
 def validate_configuration(config) -> bool:
@@ -55,8 +54,8 @@ def validate_configuration(config) -> bool:
     if not getattr(config, 'organization', None):
         errors.append("Organization name not configured")
     
-    if not getattr(config, 'projects', None):
-        errors.append("No projects configured")
+    if not st.session_state.get('db_initialized', False):
+        errors.append("Database not initialized")
     
     if errors:
         st.error("❌ Configuration incomplete:")
@@ -68,358 +67,379 @@ def validate_configuration(config) -> bool:
     return True
 
 
-def get_repository_list(config) -> list:
-    """Get list of repositories from configuration"""
-    repositories = []
-    for project in config.projects:
-        for repo in project.repositories:
-            repositories.append({
-                'project': project.name,
-                'repository': repo,
-                'display_name': f"{project.name}/{repo}"
-            })
-    return repositories
-
-
-def show_task_selection(repositories: list):
-    """Show task selection interface"""
-    st.subheader("🎯 Select Analysis Tasks")
+def show_new_request_interface():
+    """Show interface for creating new analytics requests"""
+    st.subheader("🎯 Create New Analytics Request")
     
-    # Repository selection
-    st.markdown("### Select Repositories")
+    # Initialize session state
+    if 'selected_project_id' not in st.session_state:
+        st.session_state.selected_project_id = None
+    if 'selected_repo_ids' not in st.session_state:
+        st.session_state.selected_repo_ids = []
     
-    # Select all/none buttons
-    col1, col2, col3 = st.columns([1, 1, 4])
-    with col1:
-        if st.button("☑️ Select All"):
-            st.session_state.selected_repositories = [repo['display_name'] for repo in repositories]
-            st.rerun()
+    # Step 1: Project Selection
+    st.markdown("### 1. Select Project (Required)")
     
-    with col2:
-        if st.button("☐ Select None"):
-            st.session_state.selected_repositories = []
-            st.rerun()
-    
-    # Repository checkboxes
-    if 'selected_repositories' not in st.session_state:
-        st.session_state.selected_repositories = []
-    
-    selected_repos = []
-    for repo in repositories:
-        is_selected = st.checkbox(
-            f"📁 {repo['display_name']}",
-            value=repo['display_name'] in st.session_state.selected_repositories,
-            key=f"repo_{repo['display_name']}"
-        )
-        if is_selected:
-            selected_repos.append(repo)
-    
-    # Task type selection
-    st.markdown("### Select Analysis Types")
-    
-    task_col1, task_col2 = st.columns(2)
-    
-    with task_col1:
-        full_analysis = st.checkbox(
-            "🔍 Full Analysis",
-            value=True,
-            help="Run complete analytics on selected repositories"
+    try:
+        # Get projects from database
+        projects = get_projects_from_database()
+        
+        if not projects:
+            st.error("❌ No projects found in database")
+            st.info("Please ensure projects are configured and database is initialized.")
+            return
+        
+        # Create project selection
+        project_options = {f"{project.name}": project.id for project in projects}
+        project_names = list(project_options.keys())
+        
+        selected_project_name = st.selectbox(
+            "Choose a project:",
+            options=[""] + project_names,
+            index=0,
+            help="Select the project containing repositories you want to analyze"
         )
         
-        data_collection_only = st.checkbox(
-            "📥 Data Collection Only",
-            value=False,
-            help="Collect and store data without running analytics"
-        )
+        if selected_project_name:
+            st.session_state.selected_project_id = project_options[selected_project_name]
+            st.success(f"✅ Selected project: {selected_project_name}")
+        else:
+            st.session_state.selected_project_id = None
+            st.session_state.selected_repo_ids = []
         
-        incremental_update = st.checkbox(
-            "🔄 Incremental Update",
-            value=False,
-            help="Update only new data since last analysis"
-        )
+    except Exception as e:
+        st.error(f"❌ Error loading projects: {str(e)}")
+        return
     
-    with task_col2:
-        export_results = st.checkbox(
-            "📤 Export Results",
-            value=True,
-            help="Export results to Excel, CSV, and JSON"
-        )
-        
-        generate_charts = st.checkbox(
-            "📊 Generate Charts",
-            value=True,
-            help="Generate visualization charts"
-        )
-        
-        store_in_database = st.checkbox(
-            "🗄️ Store in Database",
-            value=True,
-            help="Store results in database for future analysis"
-        )
-    
-    # Analysis options
-    if full_analysis or data_collection_only:
-        st.markdown("### Analysis Options")
-        
-        with st.expander("📅 Date Range (Optional)"):
-            col1, col2 = st.columns(2)
-            with col1:
-                start_date = st.date_input(
-                    "Start Date",
-                    value=None,
-                    help="Leave empty to analyze all history"
-                )
-            with col2:
-                end_date = st.date_input(
-                    "End Date",
-                    value=None,
-                    help="Leave empty to analyze up to current date"
-                )
-        
-        with st.expander("🔧 Advanced Options"):
-            batch_size = st.slider(
-                "Batch Size",
-                min_value=10,
-                max_value=500,
-                value=100,
-                help="Number of commits to process at once"
-            )
-            
-            max_concurrent = st.slider(
-                "Max Concurrent Requests",
-                min_value=1,
-                max_value=10,
-                value=5,
-                help="Maximum number of concurrent API requests"
-            )
-    
-    # Progress display area
-    progress_container = st.container()
-    
-    # Action buttons
-    st.markdown("---")
-    
-    if selected_repos:
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        with col1:
-            if st.button("🚀 Start Analysis", type="primary", disabled=not selected_repos):
-                run_analysis(
-                    selected_repos,
-                    full_analysis,
-                    data_collection_only,
-                    incremental_update,
-                    export_results,
-                    generate_charts,
-                    store_in_database,
-                    progress_container
-                )
-        
-        with col2:
-            if st.button("📋 Preview Tasks"):
-                show_task_preview(selected_repos, full_analysis, data_collection_only, export_results)
-    else:
-        st.warning("⚠️ Please select at least one repository to analyze")
-    
-    # Show recent analysis results
-    show_recent_results()
-
-
-def show_task_preview(repos: list, full_analysis: bool, data_collection_only: bool, export_results: bool):
-    """Show preview of tasks to be executed"""
-    st.markdown("### 📋 Task Preview")
-    
-    with st.expander("Tasks to Execute", expanded=True):
-        task_count = 0
-        
-        for repo in repos:
-            st.markdown(f"**{repo['display_name']}**")
-            
-            if data_collection_only:
-                st.write("  • Collect commit data")
-                st.write("  • Collect branch data")
-                st.write("  • Collect pull request data")
-                task_count += 3
-            
-            if full_analysis:
-                st.write("  • Run commit analytics")
-                st.write("  • Run author analytics")
-                st.write("  • Run branch analytics")
-                st.write("  • Run code quality analysis")
-                st.write("  • Run time analytics")
-                task_count += 5
-            
-            if export_results:
-                st.write("  • Export to Excel")
-                st.write("  • Export to CSV")
-                st.write("  • Export to JSON")
-                task_count += 3
-            
-            st.write("")
-        
-        st.info(f"Total estimated tasks: {task_count}")
-
-
-def run_analysis(repos: list, full_analysis: bool, data_collection_only: bool, 
-                incremental_update: bool, export_results: bool, generate_charts: bool,
-                store_in_database: bool, progress_container):
-    """Run the selected analysis tasks"""
-    
-    with progress_container:
-        st.markdown("### 🔄 Analysis Progress")
-        
-        # Create progress tracking
-        total_repos = len(repos)
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        results_container = st.container()
-        
-        # Initialize results storage
-        if 'analysis_results' not in st.session_state:
-            st.session_state.analysis_results = {}
+    # Step 2: Repository Selection (only if project selected)
+    if st.session_state.selected_project_id:
+        st.markdown("### 2. Select Repositories (At least 1 required)")
         
         try:
-            # Run analysis for each repository
-            for i, repo in enumerate(repos):
-                repo_key = repo['display_name']
-                
-                status_text.text(f"Analyzing {repo_key}...")
-                
-                # Simulate analysis (replace with actual analysis call)
-                if full_analysis:
-                    result = run_repository_analysis(repo['project'], repo['repository'])
-                    st.session_state.analysis_results[repo_key] = result
-                    
-                    with results_container:
-                        st.success(f"✅ Completed analysis for {repo_key}")
-                        if result:
-                            show_analysis_summary(repo_key, result)
-                
-                elif data_collection_only:
-                    result = run_data_collection(repo['project'], repo['repository'])
-                    
-                    with results_container:
-                        st.success(f"✅ Collected data for {repo_key}")
-                        if result:
-                            st.write(f"  • Commits: {result.get('commits', 0)}")
-                            st.write(f"  • Branches: {result.get('branches', 0)}")
-                            st.write(f"  • Pull Requests: {result.get('pull_requests', 0)}")
-                
-                # Update progress
-                progress_bar.progress((i + 1) / total_repos)
+            # Get repositories for selected project
+            repositories = get_repositories_from_database(st.session_state.selected_project_id)
             
-            status_text.text("✅ Analysis completed!")
+            if not repositories:
+                st.warning("⚠️ No repositories found in selected project")
+                return
             
-            # Export results if requested
-            if export_results and st.session_state.analysis_results:
-                export_analysis_results(st.session_state.analysis_results, results_container)
+            # Repository selection with checkboxes
+            st.write(f"Select repositories from **{selected_project_name}**:")
+            
+            # Select All/None buttons
+            col1, col2, col3 = st.columns([1, 1, 4])
+            with col1:
+                if st.button("☑️ Select All"):
+                    st.session_state.selected_repo_ids = [repo.id for repo in repositories]
+                    st.rerun()
+            
+            with col2:
+                if st.button("☐ Select None"):
+                    st.session_state.selected_repo_ids = []
+                    st.rerun()
+            
+            # Repository checkboxes
+            selected_repos = []
+            for repo in repositories:
+                is_selected = st.checkbox(
+                    f"📁 {repo.name}",
+                    value=repo.id in st.session_state.selected_repo_ids,
+                    key=f"repo_{repo.id}",
+                    help=f"Repository: {repo.name}"
+                )
+                if is_selected:
+                    selected_repos.append(repo)
+                    if repo.id not in st.session_state.selected_repo_ids:
+                        st.session_state.selected_repo_ids.append(repo.id)
+                elif repo.id in st.session_state.selected_repo_ids:
+                    st.session_state.selected_repo_ids.remove(repo.id)
+            
+            # Show selected count
+            if st.session_state.selected_repo_ids:
+                st.info(f"✅ {len(st.session_state.selected_repo_ids)} repositories selected")
             
         except Exception as e:
-            st.error(f"❌ Analysis failed: {str(e)}")
-            status_text.text("❌ Analysis failed!")
-
-
-def run_repository_analysis(project: str, repository: str) -> dict:
-    """Run analysis for a single repository"""
-    try:
-        # This should be run in a separate thread/process for async operations
-        # For now, return mock data
-        return {
-            'status': 'completed',
-            'timestamp': datetime.now().isoformat(),
-            'project': project,
-            'repository': repository,
-            'commit_count': 150,
-            'author_count': 5,
-            'branch_count': 8,
-            'pr_count': 25
-        }
-    except Exception as e:
-        return {
-            'status': 'failed',
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-
-def run_data_collection(project: str, repository: str) -> dict:
-    """Run data collection for a single repository"""
-    try:
-        # Mock data collection
-        return {
-            'commits': 150,
-            'branches': 8,
-            'pull_requests': 25,
-            'timestamp': datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-
-
-def show_analysis_summary(repo_key: str, result: dict):
-    """Show summary of analysis results"""
-    if result.get('status') == 'completed':
-        col1, col2, col3, col4 = st.columns(4)
+            st.error(f"❌ Error loading repositories: {str(e)}")
+            return
+    
+    # Step 3: Submit Request
+    if st.session_state.selected_project_id and st.session_state.selected_repo_ids:
+        st.markdown("### 3. Submit Request")
+        
+        # Show summary
+        with st.expander("📋 Request Summary", expanded=True):
+            st.write(f"**Project:** {selected_project_name}")
+            st.write(f"**Repositories:** {len(st.session_state.selected_repo_ids)} selected")
+            
+            # Show selected repo names
+            selected_repo_names = []
+            for repo in repositories:
+                if repo.id in st.session_state.selected_repo_ids:
+                    selected_repo_names.append(repo.name)
+            
+            st.write("**Selected Repositories:**")
+            for name in selected_repo_names:
+                st.write(f"  • {name}")
+        
+        # Submit button
+        col1, col2 = st.columns([1, 3])
         with col1:
-            st.metric("Commits", result.get('commit_count', 0))
+            if st.button("🚀 Submit Request", type="primary"):
+                submit_analytics_request(selected_project_name, st.session_state.selected_repo_ids)
+
+
+def show_existing_requests_interface():
+    """Show interface for viewing existing analytics requests"""
+    st.subheader("📋 Analytics Request Status")
+    
+    try:
+        # Get all requests from database
+        requests = get_analytics_requests_from_database()
+        
+        if not requests:
+            st.info("📭 No analytics requests found")
+            return
+        
+        # Filter options
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            status_filter = st.selectbox(
+                "Filter by status:",
+                options=["All", "Requested", "Running", "Completed", "Failed"],
+                index=0
+            )
+        
+        # Filter requests
+        if status_filter != "All":
+            filtered_requests = [r for r in requests if r.status == status_filter]
+        else:
+            filtered_requests = requests
+        
+        if not filtered_requests:
+            st.info(f"📭 No requests found with status: {status_filter}")
+            return
+        
+        # Show requests in a table-like format
+        for request in filtered_requests:
+            show_request_card(request)
+        
+        # Auto-refresh for running requests
+        running_requests = [r for r in requests if r.status == "Running"]
+        if running_requests:
+            # Auto-refresh every 5 seconds for running requests
+            st.rerun()
+            
+    except Exception as e:
+        st.error(f"❌ Error loading requests: {str(e)}")
+
+
+def show_request_card(request):
+    """Show a single request as an expandable card"""
+    # Status emoji
+    status_emoji = {
+        "Requested": "🕐",
+        "Running": "🔄", 
+        "Completed": "✅",
+        "Failed": "❌"
+    }
+    
+    # Card header
+    with st.container():
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+        
+        with col1:
+            st.write(f"**{status_emoji.get(request.status, '📊')} Request #{request.id}**")
+            st.write(f"Project: {request.project_name}")
+        
         with col2:
-            st.metric("Authors", result.get('author_count', 0))
+            st.write("**Status**")
+            st.write(request.status)
+        
         with col3:
-            st.metric("Branches", result.get('branch_count', 0))
+            st.write("**Requested**")
+            st.write(request.requested_date.strftime("%Y-%m-%d"))
+        
         with col4:
-            st.metric("Pull Requests", result.get('pr_count', 0))
+            st.write("**Repositories**")
+            st.write(f"{len(request.repository_ids)} repos")
+    
+    # Expandable details
+    with st.expander(f"📝 Details for Request #{request.id}", expanded=False):
+        detail_col1, detail_col2 = st.columns(2)
+        
+        with detail_col1:
+            st.write(f"**Request ID:** {request.id}")
+            st.write(f"**Project:** {request.project_name}")
+            st.write(f"**Status:** {request.status}")
+            st.write(f"**Requested Date:** {request.requested_date}")
+            
+            if request.started_date:
+                st.write(f"**Started Date:** {request.started_date}")
+            
+            if request.completed_date:
+                st.write(f"**Completed Date:** {request.completed_date}")
+        
+        with detail_col2:
+            # Show repository names
+            st.write("**Repositories:**")
+            try:
+                repo_names = get_repository_names_by_ids(request.repository_ids)
+                for name in repo_names:
+                    st.write(f"  • {name}")
+            except:
+                st.write(f"  • {len(request.repository_ids)} repositories")
+            
+            # Show progress for running requests
+            if request.status == "Running" and request.progress_info:
+                progress = request.progress_info
+                total = progress.get("total_repos", len(request.repository_ids))
+                completed = progress.get("completed_repos", 0)
+                current = progress.get("current_repo", "")
+                
+                st.write("**Progress:**")
+                progress_pct = completed / total if total > 0 else 0
+                st.progress(progress_pct)
+                st.write(f"{completed}/{total} repositories completed")
+                
+                if current:
+                    st.write(f"Currently processing: {current}")
+        
+        # Show error message for failed requests
+        if request.status == "Failed" and request.error_message:
+            st.error(f"**Error:** {request.error_message}")
+        
+        # Show result files for completed requests
+        if request.status == "Completed" and request.result_files:
+            st.success("**Generated Files:**")
+            for file_path in request.result_files:
+                st.write(f"  📄 {file_path}")
+    
+    st.markdown("---")
 
 
-def export_analysis_results(results: dict, container):
-    """Export analysis results"""
-    with container:
-        st.markdown("### 📤 Exporting Results...")
+def submit_analytics_request(project_name: str, repository_ids: list):
+    """Submit a new analytics request"""
+    try:
+        # Check if polling service is running
+        if not is_polling_service_running():
+            st.error("❌ Background processing service is not running. Please restart the application.")
+            return
         
-        export_progress = st.progress(0)
+        # Create request in database
+        request = create_analytics_request_in_database(project_name, repository_ids)
         
-        # Simulate export process
-        formats = ['Excel', 'CSV', 'JSON']
-        for i, format_name in enumerate(formats):
-            st.write(f"Exporting to {format_name}...")
-            export_progress.progress((i + 1) / len(formats))
-        
-        st.success("✅ Results exported successfully!")
-        
-        # Show export file paths
-        output_dir = Path("output")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        st.write("**Generated Files:**")
-        st.write(f"📊 Excel: `output/git_analytics_{timestamp}.xlsx`")
-        st.write(f"📋 CSV: `output/summary_{timestamp}.csv`")
-        st.write(f"📄 JSON: `output/git_analytics_{timestamp}.json`")
+        if request:
+            st.success(f"✅ Analytics request #{request.id} created successfully!")
+            st.info(f"🔄 Request added to processing queue")
+            
+            st.success(f"🚀 Request #{request.id} will be processed by the background service")
+            st.info("You can monitor progress in the 'Existing Requests' tab")
+            
+            # Information about persistent processing
+            st.info(
+                "ℹ️ **Background Processing:** This request will be processed by the built-in "
+                "background service. Processing will continue even if you close this tab."
+            )
+            
+            # Clear selections
+            st.session_state.selected_project_id = None
+            st.session_state.selected_repo_ids = []
+            
+            # Auto-switch to existing requests tab
+            st.balloons()
+            
+        else:
+            st.error("❌ Failed to create analytics request")
+            
+    except Exception as e:
+        st.error(f"❌ Error submitting request: {str(e)}")
 
 
-def show_recent_results():
-    """Show recent analysis results"""
-    if 'analysis_results' in st.session_state and st.session_state.analysis_results:
-        st.markdown("---")
-        st.subheader("📋 Recent Results")
-        
-        for repo_key, result in st.session_state.analysis_results.items():
-            with st.expander(f"📁 {repo_key}"):
-                if result.get('status') == 'completed':
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**Project:** {result.get('project')}")
-                        st.write(f"**Repository:** {result.get('repository')}")
-                        st.write(f"**Completed:** {result.get('timestamp', '').split('T')[0]}")
-                    
-                    with col2:
-                        st.metric("Commits", result.get('commit_count', 0))
-                        st.metric("Authors", result.get('author_count', 0))
-                        st.metric("Pull Requests", result.get('pr_count', 0))
-                else:
-                    st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
-        
-        if st.button("🗑️ Clear Results"):
-            st.session_state.analysis_results = {}
-            st.rerun() 
+# Database helper functions
+
+@st.cache_data(ttl=60)  # Cache for 1 minute
+def get_projects_from_database():
+    """Get projects from database"""
+    try:
+        # Run async function in sync context
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            db_manager = DatabaseManager()
+            projects = loop.run_until_complete(db_manager.get_projects())
+            return projects
+        finally:
+            loop.close()
+    except Exception as e:
+        st.error(f"Error loading projects: {e}")
+        return []
+
+
+@st.cache_data(ttl=60)  # Cache for 1 minute
+def get_repositories_from_database(project_id: str):
+    """Get repositories from database for a project"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            db_manager = DatabaseManager()
+            repositories = loop.run_until_complete(db_manager.get_repositories(project_id))
+            return repositories
+        finally:
+            loop.close()
+    except Exception as e:
+        st.error(f"Error loading repositories: {e}")
+        return []
+
+
+def get_analytics_requests_from_database():
+    """Get analytics requests from database"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            db_manager = DatabaseManager()
+            requests = loop.run_until_complete(db_manager.get_analytics_requests())
+            return requests
+        finally:
+            loop.close()
+    except Exception as e:
+        st.error(f"Error loading requests: {e}")
+        return []
+
+
+def create_analytics_request_in_database(project_name: str, repository_ids: list):
+    """Create analytics request in database"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            db_manager = DatabaseManager()
+            request = loop.run_until_complete(
+                db_manager.store_analytics_request(project_name, repository_ids)
+            )
+            return request
+        finally:
+            loop.close()
+    except Exception as e:
+        st.error(f"Error creating request: {e}")
+        return None
+
+
+def get_repository_names_by_ids(repository_ids: list):
+    """Get repository names by their IDs"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            db_manager = DatabaseManager()
+            names = []
+            for repo_id in repository_ids:
+                repo = loop.run_until_complete(db_manager.get_repository(repo_id))
+                if repo:
+                    names.append(repo.name)
+            return names
+        finally:
+            loop.close()
+    except Exception as e:
+        return [f"Repository ID: {rid}" for rid in repository_ids] 

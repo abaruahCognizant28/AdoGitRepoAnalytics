@@ -350,6 +350,39 @@ python db_cli.py reanalyze ProjectName RepositoryName
 - **Data Export**: Export repository data for external tools
 - **Performance**: Faster analysis using cached data
 
+## Background Processing
+
+### Integrated Database Polling Service
+
+✅ **Built-in Solution:** The application now includes an integrated database polling service that starts automatically with the web UI and provides reliable background processing.
+
+**Key Features:**
+- ✅ **Auto-Start**: Starts automatically when the application launches
+- ✅ **Persistent Processing**: Continues running as long as the application is running
+- ✅ **Automatic Recovery**: Detects and resumes interrupted requests from previous runs
+- ✅ **Request Queue**: Processes multiple requests sequentially
+- ✅ **Real-time Status**: Live status updates in the UI sidebar
+- ✅ **Failure Recovery**: Can pick up from where it failed if application is restarted
+
+**How it Works:**
+1. **Application Startup**: Polling service starts automatically with the web UI
+2. **Request Creation**: Users create requests through the web interface
+3. **Automatic Processing**: Service polls database every 10 seconds for new requests
+4. **Status Updates**: Real-time progress tracking in the database
+5. **Failure Recovery**: On restart, detects interrupted requests and resumes processing
+
+**Resume from Failure:**
+- If the application is terminated while processing requests
+- On restart, the service automatically detects "Running" requests that were interrupted
+- Requests running for more than 5 minutes are reset to "Requested" status
+- Processing resumes from where it left off
+
+**Monitoring:**
+- Service status visible in the sidebar (✅ Background Processing Service)
+- Active processing count displayed when requests are being processed
+- Request progress tracked in "Existing Requests" tab
+- All activity logged to application logs
+
 ### Processing Options
 
 ```yaml

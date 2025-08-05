@@ -3,6 +3,7 @@ Analytics Engine for Git Repository Data Processing
 """
 
 import logging
+import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
@@ -12,7 +13,7 @@ from datetime import timezone
 
 from .azure_client import AzureDevOpsClient, Commit, Branch, PullRequest, Repository
 from .config import get_config
-from .database import DatabaseManager
+from .database import DatabaseManager, AnalyticsRequestModel
 
 
 logger = logging.getLogger(__name__)
@@ -583,4 +584,89 @@ class AnalyticsEngine:
                 
         except Exception as e:
             logger.error(f"Failed to get stored commits count: {e}")
-            return 0 
+            return 0
+
+
+# Analytics Request Processing Functions
+
+async def process_analytics_request_async(request_id: int):
+    """Process an analytics request asynchronously"""
+    db_manager = DatabaseManager()
+    await db_manager.initialize()
+    
+    try:
+        # Get the request
+        request = await db_manager.get_analytics_request(request_id)
+        if not request:
+            logger.error(f"Request {request_id} not found")
+            return
+        
+        # Update status to Running
+        await db_manager.update_request_status(request_id, "Running")
+        
+        # Get repositories from the request
+        repository_ids = request.repository_ids
+        project_name = request.project_name
+        
+        # Initialize analytics engine
+        analytics_engine = AnalyticsEngine()
+        
+        result_files = []
+        progress_info = {"total_repos": len(repository_ids), "completed_repos": 0}
+        
+        # Process each repository
+        for i, repo_id in enumerate(repository_ids):
+            repo = await db_manager.get_repository(repo_id)
+            if not repo:
+                continue
+            
+            # Update progress
+            progress_info["completed_repos"] = i
+            progress_info["current_repo"] = repo.name
+            await db_manager.update_request_status(request_id, "Running", progress_info=progress_info)
+            
+            # Run analytics for this repository
+            try:
+                logger.info(f"Processing analytics for {project_name}/{repo.name}")
+                result = await analytics_engine.analyze_repository(project_name, repo.name)
+                
+                # For now, simulate file generation
+                # In real implementation, this would call export functions
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                files = [
+                    f"output/git_analytics_{project_name}_{repo.name}_{timestamp}.xlsx",
+                    f"output/git_analytics_{project_name}_{repo.name}_{timestamp}.json",
+                    f"output/summary_{project_name}_{repo.name}_{timestamp}.csv"
+                ]
+                result_files.extend(files)
+                
+            except Exception as e:
+                logger.error(f"Error processing repository {repo.name}: {e}")
+                # Continue with other repositories
+        
+        # Update final progress
+        progress_info["completed_repos"] = len(repository_ids)
+        
+        # Update status to Completed
+        await db_manager.update_request_status(
+            request_id, 
+            "Completed",
+            progress_info=progress_info,
+            result_files=result_files
+        )
+        
+        logger.info(f"Analytics request {request_id} completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error processing analytics request {request_id}: {e}")
+        await db_manager.update_request_status(
+            request_id, 
+            "Failed",
+            error_message=str(e)
+        )
+    finally:
+        await db_manager.close()
+
+
+# Note: The start_analytics_request_background function has been replaced
+# by the AnalyticsPollingService for more reliable background processing. 

@@ -20,6 +20,7 @@ from streamlit_option_menu import option_menu
 from src.config import get_config, reload_config
 from src.analytics_engine import AnalyticsEngine
 from src.database import DatabaseManager
+from src.polling_service import start_polling_service, is_polling_service_running, get_polling_service
 
 # Import UI pages
 from pages import config_page, data_collection_page, analytics_page, database_page
@@ -73,6 +74,8 @@ def setup_session_state():
         st.session_state.selected_repositories = []
     if 'db_initialized' not in st.session_state:
         st.session_state.db_initialized = False
+    if 'polling_service_started' not in st.session_state:
+        st.session_state.polling_service_started = False
 
 
 def main_navigation():
@@ -167,6 +170,16 @@ def show_connection_status():
             st.success("✅ Database Enabled")
         else:
             st.warning("⚠️ Database Disabled")
+        
+        # Polling service status
+        if is_polling_service_running():
+            st.success("✅ Background Processing Service")
+            service = get_polling_service()
+            status = service.get_status()
+            if status['processing_count'] > 0:
+                st.info(f"🔄 Processing {status['processing_count']} request(s)")
+        else:
+            st.error("❌ Background Processing Service")
             
     except Exception as e:
         st.error(f"❌ Configuration Error: {str(e)}")
@@ -215,6 +228,16 @@ def main():
                     st.error("Failed to initialize database. Some features may not work correctly.")
             except Exception as e:
                 st.error(f"Database initialization error: {e}")
+    
+    # Start polling service if database is initialized and service not already started
+    if st.session_state.get('db_initialized', False) and not st.session_state.get('polling_service_started', False):
+        try:
+            with st.spinner("Starting background processing service..."):
+                start_polling_service()
+                st.session_state.polling_service_started = True
+                st.success("🚀 Background processing service started")
+        except Exception as e:
+            st.error(f"Failed to start background processing service: {e}")
     
     # Navigation
     selected_page = main_navigation()

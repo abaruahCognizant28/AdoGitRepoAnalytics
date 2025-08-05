@@ -210,6 +210,24 @@ class PullRequestModel(Base):
         )
 
 
+class AnalyticsRequestModel(Base):
+    """Database model for tracking analytics requests"""
+    __tablename__ = "analytics_requests"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_name = Column(String, nullable=False)
+    repository_ids = Column(JSON, nullable=False)  # List of repository IDs
+    status = Column(String, nullable=False, default="Requested")  # Requested, Running, Completed, Failed
+    requested_date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_date = Column(DateTime)
+    completed_date = Column(DateTime)
+    error_message = Column(Text)
+    progress_info = Column(JSON)  # Store progress information
+    result_files = Column(JSON)  # Store paths to generated files
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AnalyticsResultModel(Base):
     """Database model for storing analytics results"""
     __tablename__ = "analytics_results"
@@ -678,4 +696,76 @@ class DatabaseManager:
             if deleted_count > 0:
                 self.logger.info(f"Cleaned up {deleted_count} old analytics results")
             
-            return deleted_count 
+            return deleted_count
+    
+    # Analytics Request CRUD operations
+    async def store_analytics_request(self, project_name: str, repository_ids: List[str]) -> AnalyticsRequestModel:
+        """Store a new analytics request"""
+        async with self.async_session_maker() as session:
+            request_model = AnalyticsRequestModel(
+                project_name=project_name,
+                repository_ids=repository_ids,
+                status="Requested"
+            )
+            
+            session.add(request_model)
+            await session.commit()
+            await session.refresh(request_model)
+            
+            self.logger.info(f"Created analytics request {request_model.id} for project {project_name}")
+            return request_model
+    
+    async def update_request_status(self, request_id: int, status: str, 
+                                  error_message: str = None, progress_info: dict = None,
+                                  result_files: List[str] = None) -> Optional[AnalyticsRequestModel]:
+        """Update analytics request status"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(AnalyticsRequestModel).where(AnalyticsRequestModel.id == request_id)
+            )
+            request_model = result.scalar_one_or_none()
+            
+            if not request_model:
+                return None
+            
+            request_model.status = status
+            request_model.updated_at = datetime.utcnow()
+            
+            if status == "Running" and not request_model.started_date:
+                request_model.started_date = datetime.utcnow()
+            elif status in ["Completed", "Failed"]:
+                request_model.completed_date = datetime.utcnow()
+            
+            if error_message:
+                request_model.error_message = error_message
+            
+            if progress_info:
+                request_model.progress_info = progress_info
+            
+            if result_files:
+                request_model.result_files = result_files
+            
+            await session.commit()
+            await session.refresh(request_model)
+            
+            self.logger.info(f"Updated request {request_id} status to {status}")
+            return request_model
+    
+    async def get_analytics_request(self, request_id: int) -> Optional[AnalyticsRequestModel]:
+        """Get analytics request by ID"""
+        async with self.async_session_maker() as session:
+            result = await session.execute(
+                select(AnalyticsRequestModel).where(AnalyticsRequestModel.id == request_id)
+            )
+            return result.scalar_one_or_none()
+    
+    async def get_analytics_requests(self, status: Optional[str] = None) -> List[AnalyticsRequestModel]:
+        """Get analytics requests, optionally filtered by status"""
+        async with self.async_session_maker() as session:
+            query = select(AnalyticsRequestModel).order_by(desc(AnalyticsRequestModel.requested_date))
+            
+            if status:
+                query = query.where(AnalyticsRequestModel.status == status)
+            
+            result = await session.execute(query)
+            return result.scalars().all() 
